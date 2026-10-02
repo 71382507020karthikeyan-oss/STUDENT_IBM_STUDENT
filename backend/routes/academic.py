@@ -1,3 +1,5 @@
+from math import isfinite
+
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt
 
@@ -128,7 +130,86 @@ def add_subject():
 
 
 # =========================================================
-# ADD MARKS
+# GET ALL MARKS - TEACHER
+# =========================================================
+
+@academic_bp.route("/marks", methods=["GET"])
+@jwt_required()
+def get_marks():
+
+    if not teacher_only():
+        return jsonify({
+            "message": "Teacher access required"
+        }), 403
+
+    # Latest mark_id is treated as the latest submitted record.
+    all_marks = Mark.query.order_by(
+        Mark.mark_id.desc()
+    ).all()
+
+    latest_marks = []
+    seen_pairs = set()
+
+    for mark in all_marks:
+
+        pair = (
+            mark.student_id,
+            mark.subject_id
+        )
+
+        if pair in seen_pairs:
+            continue
+
+        seen_pairs.add(pair)
+        latest_marks.append(mark)
+
+    result = []
+
+    for mark in latest_marks:
+
+        student = db.session.get(
+            Student,
+            mark.student_id
+        )
+
+        subject = db.session.get(
+            Subject,
+            mark.subject_id
+        )
+
+        result.append({
+            "mark_id": mark.mark_id,
+            "student_id": mark.student_id,
+            "student_name": (
+                student.name
+                if student
+                else None
+            ),
+            "subject_id": mark.subject_id,
+            "subject_name": (
+                subject.subject_name
+                if subject
+                else None
+            ),
+            "internal_mark": float(
+                mark.internal_mark or 0
+            ),
+            "external_mark": float(
+                mark.external_mark or 0
+            ),
+            "total_mark": float(
+                mark.total_mark or 0
+            )
+        })
+
+    return jsonify({
+        "count": len(result),
+        "marks": result
+    }), 200
+
+
+# =========================================================
+# ADD / UPDATE MARKS
 # =========================================================
 
 @academic_bp.route("/marks", methods=["POST"])
@@ -155,13 +236,24 @@ def add_marks():
 
     try:
 
+        student_id = int(student_id)
+        subject_id = int(subject_id)
         internal_mark = float(internal_mark)
         external_mark = float(external_mark)
 
     except (TypeError, ValueError):
 
         return jsonify({
-            "message": "Marks must be numeric"
+            "message": "Student, subject and marks must be numeric"
+        }), 400
+
+    if (
+        not isfinite(internal_mark)
+        or not isfinite(external_mark)
+    ):
+
+        return jsonify({
+            "message": "Marks must be valid numbers"
         }), 400
 
     student = db.session.get(
@@ -186,26 +278,78 @@ def add_marks():
             "message": "Subject not found"
         }), 404
 
-    if internal_mark < 0 or external_mark < 0:
+    # Internal mark is out of 40.
+    if internal_mark < 0 or internal_mark > 40:
 
         return jsonify({
-            "message": "Marks cannot be negative"
+            "message": "Internal mark must be between 0 and 40"
         }), 400
 
-    total_mark = (
-        internal_mark +
-        external_mark
-    )
+    # External mark is out of 60.
+    if external_mark < 0 or external_mark > 60:
 
-    mark = Mark(
-        student_id=student_id,
-        subject_id=subject_id,
-        internal_mark=internal_mark,
-        external_mark=external_mark,
-        total_mark=total_mark
-    )
+        return jsonify({
+            "message": "External mark must be between 0 and 60"
+        }), 400
+
+    total_mark = internal_mark + external_mark
 
     try:
+
+        # IMPORTANT BEHAVIOUR:
+        # One student + one subject = one mark record.
+        # If a mark already exists for the selected student and subject,
+        # update that record instead of creating a second record.
+        #
+        # If older duplicate records already exist, keep the latest
+        # mark_id and remove the extra records. The newly submitted marks
+        # become the current marks for that student + subject.
+        existing_marks = Mark.query.filter_by(
+            student_id=student_id,
+            subject_id=subject_id
+        ).order_by(
+            Mark.mark_id.desc()
+        ).all()
+
+        if existing_marks:
+
+            # Keep the latest record for this student + subject.
+            mark = existing_marks[0]
+            old_mark_count = len(existing_marks)
+
+            mark.internal_mark = internal_mark
+            mark.external_mark = external_mark
+            mark.total_mark = total_mark
+
+            # Remove accidental duplicate rows created by the old logic.
+            for duplicate_mark in existing_marks[1:]:
+                db.session.delete(duplicate_mark)
+
+            db.session.commit()
+
+            return jsonify({
+                "message": "Marks updated successfully",
+                "mark_id": mark.mark_id,
+                "student_id": student_id,
+                "subject_id": subject_id,
+                "subject_name": subject.subject_name,
+                "internal_mark": internal_mark,
+                "external_mark": external_mark,
+                "total_mark": total_mark,
+                "duplicate_records_removed": max(
+                    old_mark_count - 1,
+                    0
+                )
+            }), 200
+
+        # No existing record: create the first mark record.
+        mark = Mark(
+            student_id=student_id,
+            subject_id=subject_id,
+            internal_mark=internal_mark,
+            external_mark=external_mark,
+            total_mark=total_mark
+        )
 
         db.session.add(mark)
         db.session.commit()
@@ -226,7 +370,7 @@ def add_marks():
         db.session.rollback()
 
         return jsonify({
-            "message": "Failed to add marks",
+            "message": "Failed to save marks",
             "error": str(e)
         }), 500
 

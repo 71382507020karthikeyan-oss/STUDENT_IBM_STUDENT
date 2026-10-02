@@ -13,6 +13,9 @@ function FormInput({
   onChange,
   type = "text",
   placeholder = "",
+  min,
+  max,
+  step,
 }) {
   return (
     <div className="form-field">
@@ -23,6 +26,9 @@ function FormInput({
         type={type}
         value={value ?? ""}
         placeholder={placeholder}
+        min={min}
+        max={max}
+        step={step}
         onChange={(e) =>
           onChange(e.target.value)
         }
@@ -616,9 +622,38 @@ function App() {
 
         setProfile(profileData);
 
-        setMarks(
-          marksData.marks || []
-        );
+        const receivedMarks =
+          marksData.marks || [];
+
+        // Keep only the latest mark for each subject in the
+        // Student view. The latest record is the greatest mark_id.
+        const latestMarksBySubject = new Map();
+
+        receivedMarks.forEach((mark) => {
+
+          const key = String(mark.subject_id);
+          const existing = latestMarksBySubject.get(key);
+
+          if (
+            !existing ||
+            Number(mark.mark_id || 0) >
+              Number(existing.mark_id || 0)
+          ) {
+            latestMarksBySubject.set(key, mark);
+          }
+
+        });
+
+        const latestMarks =
+          Array.from(
+            latestMarksBySubject.values()
+          ).sort(
+            (a, b) =>
+              Number(a.subject_id || 0) -
+              Number(b.subject_id || 0)
+          );
+
+        setMarks(latestMarks);
 
         setAttendance(
           attendanceData.attendance ||
@@ -1287,14 +1322,13 @@ function App() {
 
 
   /* =======================================================
-     ADD MARKS
+     ADD / UPDATE MARKS
   ======================================================= */
 
   const handleAddMarks =
     async (event) => {
 
       event.preventDefault();
-
 
       if (
         !marksForm.student_id ||
@@ -1309,6 +1343,52 @@ function App() {
 
       }
 
+      const internalMark =
+        Number(marksForm.internal_mark);
+
+      const externalMark =
+        Number(marksForm.external_mark);
+
+      if (
+        !Number.isFinite(internalMark) ||
+        internalMark < 0 ||
+        internalMark > 40
+      ) {
+
+        showError(
+          "Internal mark must be between 0 and 40"
+        );
+
+        return;
+
+      }
+
+      if (
+        !Number.isFinite(externalMark) ||
+        externalMark < 0 ||
+        externalMark > 60
+      ) {
+
+        showError(
+          "External mark must be between 0 and 60"
+        );
+
+        return;
+
+      }
+
+      const totalMark =
+        internalMark + externalMark;
+
+      if (totalMark > 100) {
+
+        showError(
+          "Total mark cannot exceed 100"
+        );
+
+        return;
+
+      }
 
       try {
 
@@ -1332,24 +1412,31 @@ function App() {
                     ),
 
                   internal_mark:
-                    Number(
-                      marksForm.internal_mark
-                    ),
+                    internalMark,
 
                   external_mark:
-                    Number(
-                      marksForm.external_mark
-                    ),
+                    externalMark,
 
                 }),
             }
           );
 
+        if (
+          data.message ===
+          "Marks updated successfully"
+        ) {
 
-        showMessage(
-          `Marks added successfully. Total: ${data.total_mark}`
-        );
+          showMessage(
+            `Marks updated successfully. Total: ${data.total_mark}`
+          );
 
+        } else {
+
+          showMessage(
+            `Marks added successfully. Total: ${data.total_mark}`
+          );
+
+        }
 
         setMarksForm({
 
@@ -4244,12 +4331,12 @@ function App() {
             <div>
 
               <h2>
-                Add Marks
+                Add / Update Marks
               </h2>
 
               <p>
-                Select student and subject
-                from the dropdowns.
+                Same student + same subject updates the existing marks.
+                Internal: 0–40 | External: 0–60 | Total: 0–100.
               </p>
 
             </div>
@@ -4342,8 +4429,11 @@ function App() {
 
 
               <FormInput
-                label="Internal Mark"
+                label="Internal Mark (0–40)"
                 type="number"
+                min="0"
+                max="40"
+                step="0.01"
 
                 value={
                   marksForm.internal_mark
@@ -4362,8 +4452,11 @@ function App() {
 
 
               <FormInput
-                label="External Mark"
+                label="External Mark (0–60)"
                 type="number"
+                min="0"
+                max="60"
+                step="0.01"
 
                 value={
                   marksForm.external_mark
